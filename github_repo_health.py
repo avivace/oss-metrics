@@ -2,7 +2,8 @@
 """
 
 Notes:
-  - "created in the last day"   = still open AND created within the last 24h
+  - "created in the last day"   = created within the last 24h, in ANY state
+                                  (still open, closed, or merged)
   - "accepted in the past day"  = merged within the last 24h
   - "rejected in the past day"  = closed unmerged within the last 24h
   - ages are computed over the currently-open PRs/issues
@@ -99,7 +100,19 @@ def ages_stats(items: list, now: datetime) -> tuple[int, float, float]:
 
 
 def fmt_days(seconds: float) -> str:
-    return f"{seconds / 86400:.1f} days"
+    """Format an age adaptively (seconds/minutes/hours when recent, days when
+    older), always with the equivalent decimal number of days appended."""
+    seconds = max(0.0, seconds)
+    days = seconds / 86400
+    if seconds < 60:
+        human = f"{seconds:.0f}s"
+    elif seconds < 3600:
+        human = f"{seconds // 60:.0f}m {seconds % 60:.0f}s"
+    elif seconds < 86400:
+        human = f"{seconds // 3600:.0f}h {(seconds % 3600) // 60:.0f}m"
+    else:
+        human = f"{seconds // 86400:.0f}d {(seconds % 86400) // 3600:.0f}h"
+    return f"{human} ({days:.3f} days)"
 
 
 def main() -> None:
@@ -115,9 +128,8 @@ def main() -> None:
     open_prs = paginate(f"/repos/{REPO}/pulls", {"state": "open"}, label="open PRs")
     log(f"  -> {len(open_prs)} open PRs")
     n_prs, avg_pr_age, max_pr_age = ages_stats(open_prs, now)
-    prs_created_last_day = sum(
-        1 for pr in open_prs if parse_ts(pr["created_at"]) >= now - WINDOW
-    )
+    prs_created_last_day = gh_search(f"repo:{REPO} is:pr created:>={cutoff}",
+                                     label="PRs created in last 24h (any state)")
 
     # --- Open issues (REST /issues returns issues AND PRs; filter PRs out) ---
     log("[2/4] Fetching open issues...")
@@ -125,9 +137,8 @@ def main() -> None:
     open_issues = [i for i in open_issues_all if "pull_request" not in i]
     log(f"  -> {len(open_issues)} open issues (out of {len(open_issues_all)} items incl. PRs)")
     n_is, avg_is_age, max_is_age = ages_stats(open_issues, now)
-    issues_created_last_day = sum(
-        1 for i in open_issues if parse_ts(i["created_at"]) >= now - WINDOW
-    )
+    issues_created_last_day = gh_search(f"repo:{REPO} is:issue created:>={cutoff}",
+                                        label="issues created in last 24h (any state)")
 
     # --- Closed in the last 24h (search API) ---
     log("[3/4] Searching closed-in-last-24h counts (search API)...")
@@ -139,22 +150,28 @@ def main() -> None:
                              label="closed issues")
     log("[4/4] Done.")
 
-    rows = [
-        ("Current number of Open PRs", n_prs),
-        ("Change Requests created in the last day", prs_created_last_day),
-        ("Accepted PRs in the past day", accepted_prs),
-        ("Rejected PRs in the past day", rejected_prs),
-        ("Average age of open PRs", fmt_days(avg_pr_age)),
-        ("Age of the oldest PR", fmt_days(max_pr_age)),
-        ("Issues in Open state", n_is),
-        ("Issues created in the past day", issues_created_last_day),
-        ("Issues closed in the past day", issues_closed),
-        ("Average age of open issues", fmt_days(avg_is_age)),
-        ("Age of the oldest open issue", fmt_days(max_is_age)),
+    sections = [
+        ("Pull Requests", [
+            ("Current number of Open PRs", n_prs),
+            ("Change Requests created in the last day", prs_created_last_day),
+            ("Accepted PRs in the past day", accepted_prs),
+            ("Rejected PRs in the past day", rejected_prs),
+            ("Average age of open PRs", fmt_days(avg_pr_age)),
+            ("Age of the oldest open PR", fmt_days(max_pr_age)),
+        ]),
+        ("Issues", [
+            ("Issues in Open state", n_is),
+            ("Issues created in the past day", issues_created_last_day),
+            ("Issues closed in the past day", issues_closed),
+            ("Average age of open issues", fmt_days(avg_is_age)),
+            ("Age of the oldest open issue", fmt_days(max_is_age)),
+        ]),
     ]
-    for label, value in rows:
-        print(f"{label:<42} {value}")
-    print("-" * 60)
+    for title, rows in sections:
+        print(f"{title}:")
+        for label, value in rows:
+            print(f"  {label:<40} {value}")
+        print("-" * 60)
     print("(ages over currently-open items; 'created/closed' = trailing 24h window)")
 
 
